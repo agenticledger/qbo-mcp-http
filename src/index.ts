@@ -309,7 +309,7 @@ app.get('/auth/connect', (_req, res) => {
         <li><code>QBO_REDIRECT_URI</code></li>
       </ul>
     </div>
-    <div class="footer">Secured by Intuit &middot; AgenticLedger</div>
+    <div class="footer">Secured by Intuit &middot; AgenticLedger &middot; <a href="https://financemcps.agenticledger.ai/" target="_blank" style="color:var(--primary,#2563EB);text-decoration:none">Explore Other MCPs</a></div>
   </div>
 </body>
 </html>`);
@@ -478,7 +478,7 @@ app.get('/auth/callback', async (req, res) => {
       <div class="text"><strong>Token auto-refresh:</strong> Access tokens are refreshed automatically. The refresh token lasts ~100 days. After expiry, visit <a href="/auth/connect">/auth/connect</a> to re-authorize.</div>
     </div>
 
-    <div class="footer">Secured by Intuit &middot; AgenticLedger</div>
+    <div class="footer">Secured by Intuit &middot; AgenticLedger &middot; <a href="https://financemcps.agenticledger.ai/" target="_blank" style="color:var(--primary,#2563EB);text-decoration:none">Explore Other MCPs</a></div>
   </div>
 
   <script>
@@ -532,7 +532,7 @@ app.get('/auth/callback', async (req, res) => {
       <p>${err.message?.replace(/</g, '&lt;').replace(/>/g, '&gt;') || 'Failed to exchange authorization code'}</p>
     </div>
     <a class="retry" href="/auth/connect">Try Again</a>
-    <div class="footer">Secured by Intuit &middot; AgenticLedger</div>
+    <div class="footer">Secured by Intuit &middot; AgenticLedger &middot; <a href="https://financemcps.agenticledger.ai/" target="_blank" style="color:var(--primary,#2563EB);text-decoration:none">Explore Other MCPs</a></div>
   </div>
 </body>
 </html>`);
