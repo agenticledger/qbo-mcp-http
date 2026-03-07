@@ -6,7 +6,7 @@
  * Auto-refresh is handled transparently when tokens expire.
  */
 
-import { randomBytes } from 'node:crypto';
+import { randomBytes, createCipheriv, createDecipheriv } from 'node:crypto';
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
 import path from 'node:path';
 
@@ -25,6 +25,35 @@ export interface StoredToken {
 
 const STORE_PATH = path.resolve(process.env.TOKEN_STORE_PATH || './data/tokens.json');
 
+const ENCRYPTION_KEY = process.env.TOKEN_ENCRYPTION_KEY
+  ? Buffer.from(process.env.TOKEN_ENCRYPTION_KEY, 'hex')
+  : null;
+
+if (!ENCRYPTION_KEY) {
+  console.warn('[token-store] WARNING: TOKEN_ENCRYPTION_KEY not set — storing tokens in plaintext. Set a 64-char hex key for encryption.');
+}
+
+function encrypt(plaintext: string): string {
+  if (!ENCRYPTION_KEY) return plaintext;
+  const iv = randomBytes(12);
+  const cipher = createCipheriv('aes-256-gcm', ENCRYPTION_KEY, iv);
+  let encrypted = cipher.update(plaintext, 'utf8', 'hex');
+  encrypted += cipher.final('hex');
+  const tag = cipher.getAuthTag().toString('hex');
+  return JSON.stringify({ encrypted: true, iv: iv.toString('hex'), tag, data: encrypted });
+}
+
+function decrypt(ciphertext: string): string {
+  const parsed = JSON.parse(ciphertext);
+  if (!parsed.encrypted) return ciphertext; // plaintext fallback
+  if (!ENCRYPTION_KEY) throw new Error('TOKEN_ENCRYPTION_KEY required to decrypt stored tokens');
+  const decipher = createDecipheriv('aes-256-gcm', ENCRYPTION_KEY, Buffer.from(parsed.iv, 'hex'));
+  decipher.setAuthTag(Buffer.from(parsed.tag, 'hex'));
+  let decrypted = decipher.update(parsed.data, 'hex', 'utf8');
+  decrypted += decipher.final('utf8');
+  return decrypted;
+}
+
 // In-memory cache backed by file
 let tokens: Map<string, StoredToken> = new Map();
 
@@ -39,7 +68,20 @@ function loadFromDisk() {
   try {
     if (existsSync(STORE_PATH)) {
       const raw = readFileSync(STORE_PATH, 'utf-8');
-      const arr: StoredToken[] = JSON.parse(raw);
+      let json: string;
+      try {
+        const parsed = JSON.parse(raw);
+        if (parsed.encrypted) {
+          json = decrypt(raw);
+        } else if (Array.isArray(parsed)) {
+          json = raw; // already plaintext array
+        } else {
+          json = decrypt(raw);
+        }
+      } catch {
+        json = raw; // assume plaintext
+      }
+      const arr: StoredToken[] = JSON.parse(json);
       tokens = new Map(arr.map((t) => [t.apiKey, t]));
     }
   } catch {
@@ -49,8 +91,8 @@ function loadFromDisk() {
 
 function saveToDisk() {
   ensureDir(STORE_PATH);
-  const arr = Array.from(tokens.values());
-  writeFileSync(STORE_PATH, JSON.stringify(arr, null, 2), 'utf-8');
+  const json = JSON.stringify(Array.from(tokens.values()), null, 2);
+  writeFileSync(STORE_PATH, encrypt(json), 'utf-8');
 }
 
 // Load on import

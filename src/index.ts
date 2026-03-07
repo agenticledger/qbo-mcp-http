@@ -199,6 +199,53 @@ app.use(express.json());
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 app.use('/static', express.static(path.join(__dirname, 'public')));
 
+// ==================== SMART ROOT / LANDING ====================
+app.get('/', (req, res) => {
+  const accept = req.headers['accept'] || '';
+  if (accept.includes('text/html')) {
+    return res.redirect('/auth/connect');
+  }
+  res.json({
+    name: 'QuickBooks Online MCP Server',
+    provider: 'AgenticLedger',
+    version: '2.0.0',
+    description:
+      'Access QuickBooks Online accounting data — invoices, customers, payments, reports, and more through MCP tools.',
+    mcpEndpoint: '/mcp',
+    transport: 'streamable-http',
+    tools: tools.length,
+    auth: {
+      type: 'oauth',
+      description:
+        'Connect your QuickBooks company via OAuth, then receive an API key (qbo_xxx) for MCP access. Also supports raw bearer passthrough with X-Realm-Id header.',
+      connectUrl: '/auth/connect',
+      header: 'Authorization: Bearer qbo_xxx',
+      setup:
+        '1. Visit /auth/connect to authorize with QuickBooks. 2. Sign in to your Intuit account. 3. Select the company to connect. 4. Receive your API key. 5. Use it as Bearer token in MCP config.',
+      alternativeAuth: {
+        type: 'bearer-passthrough',
+        description:
+          'For direct access: pass a raw QBO access token as Bearer, plus X-Realm-Id and optionally X-Qbo-Environment headers.',
+      },
+    },
+    configTemplate: {
+      mcpServers: {
+        quickbooks: {
+          url: `${SERVER_BASE_URL}/mcp`,
+          headers: {
+            Authorization: 'Bearer <your-qbo-api-key>',
+          },
+        },
+      },
+    },
+    links: {
+      health: '/health',
+      connect: '/auth/connect',
+      documentation: 'https://financemcps.agenticledger.ai/qbo/',
+    },
+  });
+});
+
 // ==================== HEALTH CHECK ====================
 app.get('/health', (_req, res) => {
   res.json({
