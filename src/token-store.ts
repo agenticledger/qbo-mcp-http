@@ -7,7 +7,7 @@
  */
 
 import { randomBytes } from 'node:crypto';
-import { readFileSync, writeFileSync, existsSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
 import path from 'node:path';
 
 export interface StoredToken {
@@ -31,7 +31,6 @@ let tokens: Map<string, StoredToken> = new Map();
 function ensureDir(filePath: string) {
   const dir = path.dirname(filePath);
   if (!existsSync(dir)) {
-    const { mkdirSync } = require('node:fs');
     mkdirSync(dir, { recursive: true });
   }
 }
