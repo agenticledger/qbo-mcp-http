@@ -17,6 +17,8 @@
  */
 
 import { randomUUID } from 'node:crypto';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import express from 'express';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
@@ -194,6 +196,8 @@ async function resolveCredentials(
 // --- Express app ---
 const app = express();
 app.use(express.json());
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+app.use('/static', express.static(path.join(__dirname, 'public')));
 
 // ==================== HEALTH CHECK ====================
 app.get('/health', (_req, res) => {
@@ -218,10 +222,50 @@ const pendingStates = new Map<string, { createdAt: number }>();
 // GET /auth/connect — start OAuth flow
 app.get('/auth/connect', (_req, res) => {
   if (!oauthEnabled) {
-    res.status(503).json({
-      error: 'OAuth not configured.',
-      hint: 'Set QBO_CLIENT_ID, QBO_CLIENT_SECRET, and QBO_REDIRECT_URI env vars.',
-    });
+    res.status(503).send(`<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>QBO MCP - Configuration Required</title>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <style>
+    :root{--primary:#2563EB;--primary-dark:#1D4ED8;--primary-light:#DBEAFE;--primary-50:#EFF6FF;--fg:#0F172A;--muted:#64748B;--surface:#F8FAFC;--border:#E2E8F0;--danger:#EF4444;--danger-light:#FEE2E2;}
+    *{margin:0;padding:0;box-sizing:border-box;}
+    body{font-family:'DM Sans',sans-serif;color:var(--fg);min-height:100vh;display:flex;align-items:center;justify-content:center;background:var(--surface);background-image:linear-gradient(135deg,var(--primary-50) 0%,var(--surface) 50%,#F0F9FF 100%);background-size:400% 400%;animation:gradientShift 15s ease infinite;}
+    @keyframes gradientShift{0%{background-position:0% 50%}50%{background-position:100% 50%}100%{background-position:0% 50%}}
+    .card{background:#fff;border:1px solid var(--border);border-radius:16px;padding:40px;max-width:520px;width:100%;margin:20px;box-shadow:0 1px 3px rgba(0,0,0,.04),0 8px 24px rgba(0,0,0,.06);animation:slideUp .5s ease-out;}
+    @keyframes slideUp{from{opacity:0;transform:translateY(20px)}to{opacity:1;transform:translateY(0)}}
+    .header{display:flex;align-items:center;gap:14px;margin-bottom:28px;padding-bottom:20px;border-bottom:1px solid var(--border);}
+    .header img{height:36px;}
+    .header span{font-size:18px;font-weight:700;color:var(--fg);}
+    .error-banner{background:var(--danger-light);border:1px solid #FECACA;border-radius:12px;padding:16px 20px;margin-bottom:24px;display:flex;align-items:flex-start;gap:12px;}
+    .error-banner svg{flex-shrink:0;margin-top:2px;}
+    .error-banner .text{font-size:14px;color:#991B1B;line-height:1.5;}
+    .error-banner .text strong{display:block;margin-bottom:4px;font-size:15px;}
+    .hint{font-size:13px;color:var(--muted);line-height:1.6;}
+    .hint code{font-family:'JetBrains Mono',monospace;background:var(--primary-50);padding:2px 6px;border-radius:4px;font-size:12px;color:var(--primary-dark);}
+    .footer{margin-top:24px;padding-top:16px;border-top:1px solid var(--border);text-align:center;font-size:12px;color:var(--muted);}
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="header"><img src="/static/logo.png" alt="AgenticLedger"><span>QuickBooks Online MCP</span></div>
+    <div class="error-banner">
+      <svg width="20" height="20" fill="none" viewBox="0 0 20 20"><circle cx="10" cy="10" r="10" fill="#EF4444"/><path d="M10 6v5M10 13.5v.5" stroke="#fff" stroke-width="1.5" stroke-linecap="round"/></svg>
+      <div class="text"><strong>OAuth Not Configured</strong>The server requires OAuth credentials to connect to QuickBooks.</div>
+    </div>
+    <div class="hint">
+      <p>Set the following environment variables and restart:</p>
+      <ul style="margin-top:8px;padding-left:20px;">
+        <li><code>QBO_CLIENT_ID</code></li>
+        <li><code>QBO_CLIENT_SECRET</code></li>
+        <li><code>QBO_REDIRECT_URI</code></li>
+      </ul>
+    </div>
+    <div class="footer">Secured by Intuit &middot; AgenticLedger</div>
+  </div>
+</body>
+</html>`);
     return;
   }
   const state = randomUUID();
@@ -283,59 +327,168 @@ app.get('/auth/callback', async (req, res) => {
 
     console.log(`[auth] New connection: realm=${realmId} company=${companyName || 'unknown'}`);
 
-    // Return a nice HTML page with the API key
+    // Return a branded HTML page with the API key
+    const mcpConfig = JSON.stringify({
+      mcpServers: {
+        quickbooks: {
+          url: `${SERVER_BASE_URL}/mcp`,
+          headers: { Authorization: `Bearer ${apiKey}` },
+        },
+      },
+    }, null, 2);
+
     res.send(`<!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
+  <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>QBO MCP - Connected</title>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
   <style>
-    body { font-family: -apple-system, BlinkMacSystemFont, sans-serif; max-width: 640px; margin: 60px auto; padding: 0 20px; color: #333; }
-    .success { background: #d4edda; border: 1px solid #c3e6cb; border-radius: 8px; padding: 20px; margin-bottom: 24px; }
-    .key-box { background: #f8f9fa; border: 2px solid #dee2e6; border-radius: 8px; padding: 16px; font-family: monospace; font-size: 14px; word-break: break-all; cursor: pointer; }
-    .key-box:hover { border-color: #007bff; }
-    code { background: #e9ecef; padding: 2px 6px; border-radius: 4px; font-size: 13px; }
-    pre { background: #1e1e1e; color: #d4d4d4; padding: 16px; border-radius: 8px; overflow-x: auto; font-size: 13px; }
-    h1 { color: #28a745; }
-    .warning { background: #fff3cd; border: 1px solid #ffeaa7; border-radius: 8px; padding: 16px; margin-top: 20px; }
+    :root{--primary:#2563EB;--primary-dark:#1D4ED8;--primary-light:#DBEAFE;--primary-50:#EFF6FF;--fg:#0F172A;--muted:#64748B;--surface:#F8FAFC;--border:#E2E8F0;--success:#10B981;--success-light:#D1FAE5;}
+    *{margin:0;padding:0;box-sizing:border-box;}
+    body{font-family:'DM Sans',sans-serif;color:var(--fg);min-height:100vh;display:flex;align-items:center;justify-content:center;background:var(--surface);background-image:linear-gradient(135deg,var(--primary-50) 0%,var(--surface) 50%,#F0F9FF 100%);background-size:400% 400%;animation:gradientShift 15s ease infinite;}
+    @keyframes gradientShift{0%{background-position:0% 50%}50%{background-position:100% 50%}100%{background-position:0% 50%}}
+    .card{background:#fff;border:1px solid var(--border);border-radius:16px;padding:40px;max-width:600px;width:100%;margin:20px;box-shadow:0 1px 3px rgba(0,0,0,.04),0 8px 24px rgba(0,0,0,.06);animation:slideUp .5s ease-out;}
+    @keyframes slideUp{from{opacity:0;transform:translateY(20px)}to{opacity:1;transform:translateY(0)}}
+    .header{display:flex;align-items:center;gap:14px;margin-bottom:28px;padding-bottom:20px;border-bottom:1px solid var(--border);}
+    .header img{height:36px;}
+    .header span{font-size:18px;font-weight:700;color:var(--fg);}
+    .success-banner{background:var(--success-light);border:1px solid #A7F3D0;border-radius:12px;padding:16px 20px;margin-bottom:28px;display:flex;align-items:center;gap:12px;}
+    .success-banner svg{flex-shrink:0;}
+    .success-banner .text{font-size:15px;font-weight:600;color:#065F46;}
+    .success-banner .text span{font-weight:400;display:block;font-size:13px;color:#047857;margin-top:2px;}
+    .section-title{font-size:14px;font-weight:600;color:var(--fg);margin-bottom:10px;display:flex;align-items:center;gap:8px;}
+    .section-title svg{color:var(--muted);}
+    .key-box{background:var(--primary-50);border:2px solid var(--primary-light);border-radius:12px;padding:14px 16px;font-family:'JetBrains Mono',monospace;font-size:13px;word-break:break-all;display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:8px;transition:border-color .2s;}
+    .key-box:hover{border-color:var(--primary);}
+    .key-box .key-text{flex:1;color:var(--primary-dark);user-select:all;}
+    .copy-btn{background:var(--primary);color:#fff;border:none;border-radius:10px;padding:8px 16px;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:600;cursor:pointer;display:flex;align-items:center;gap:6px;transition:background .15s;white-space:nowrap;}
+    .copy-btn:hover{background:var(--primary-dark);}
+    .copy-btn.copied{background:var(--success);}
+    .hint{font-size:12px;color:var(--muted);margin-bottom:24px;}
+    .config-block{position:relative;margin-bottom:24px;}
+    .config-pre{background:#1E293B;border-radius:12px;padding:20px;overflow-x:auto;font-family:'JetBrains Mono',monospace;font-size:12.5px;line-height:1.7;margin:0;color:#E2E8F0;}
+    .config-pre .json-key{color:#7DD3FC;}
+    .config-pre .json-str{color:#86EFAC;}
+    .config-pre .json-brace{color:#94A3B8;}
+    .config-copy{position:absolute;top:12px;right:12px;background:rgba(255,255,255,.1);color:#CBD5E1;border:1px solid rgba(255,255,255,.15);border-radius:8px;padding:6px 12px;font-family:'DM Sans',sans-serif;font-size:12px;font-weight:500;cursor:pointer;transition:all .15s;display:flex;align-items:center;gap:4px;}
+    .config-copy:hover{background:rgba(255,255,255,.2);color:#fff;}
+    .config-copy.copied{background:rgba(16,185,129,.3);color:#86EFAC;border-color:rgba(16,185,129,.4);}
+    .info-box{background:#FFFBEB;border:1px solid #FDE68A;border-radius:12px;padding:16px 20px;margin-bottom:24px;display:flex;align-items:flex-start;gap:12px;}
+    .info-box svg{flex-shrink:0;margin-top:1px;}
+    .info-box .text{font-size:13px;color:#92400E;line-height:1.5;}
+    .info-box .text strong{font-weight:600;}
+    .info-box .text a{color:#D97706;font-weight:500;}
+    .footer{padding-top:20px;border-top:1px solid var(--border);text-align:center;font-size:12px;color:var(--muted);}
   </style>
 </head>
 <body>
-  <div class="success">
-    <h1>Connected!</h1>
-    <p>QuickBooks company <strong>${companyName || realmId}</strong> is now linked.</p>
+  <div class="card">
+    <div class="header"><img src="/static/logo.png" alt="AgenticLedger"><span>QuickBooks Online MCP</span></div>
+
+    <div class="success-banner">
+      <svg width="24" height="24" fill="none" viewBox="0 0 24 24"><circle cx="12" cy="12" r="12" fill="#10B981"/><path d="M7.5 12.5l3 3 6-6.5" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      <div class="text">Connected to QuickBooks<span>${companyName || realmId}</span></div>
+    </div>
+
+    <div class="section-title">
+      <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0110 0v4"/></svg>
+      Your API Key
+    </div>
+    <div class="key-box">
+      <span class="key-text" id="apiKeyText">${apiKey}</span>
+      <button class="copy-btn" onclick="copyText('${apiKey}',this)">
+        <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>
+        Copy
+      </button>
+    </div>
+    <div class="hint">This key authenticates all MCP requests. Store it securely.</div>
+
+    <div class="section-title">
+      <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M16 18l6-6-6-6"/><path d="M8 6l-6 6 6 6"/></svg>
+      MCP Configuration
+    </div>
+    <p style="font-size:13px;color:var(--muted);margin-bottom:12px;">Add this to your <code style="font-family:'JetBrains Mono',monospace;background:var(--primary-50);padding:2px 6px;border-radius:4px;font-size:12px;color:var(--primary-dark);">claude_desktop_config.json</code>:</p>
+    <div class="config-block">
+      <pre class="config-pre"><span class="json-brace">{</span>
+  <span class="json-key">"mcpServers"</span>: <span class="json-brace">{</span>
+    <span class="json-key">"quickbooks"</span>: <span class="json-brace">{</span>
+      <span class="json-key">"url"</span>: <span class="json-str">"${SERVER_BASE_URL}/mcp"</span>,
+      <span class="json-key">"headers"</span>: <span class="json-brace">{</span>
+        <span class="json-key">"Authorization"</span>: <span class="json-str">"Bearer ${apiKey}"</span>
+      <span class="json-brace">}</span>
+    <span class="json-brace">}</span>
+  <span class="json-brace">}</span>
+<span class="json-brace">}</span></pre>
+      <button class="config-copy" onclick="copyConfig(this)">
+        <svg width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>
+        Copy
+      </button>
+    </div>
+
+    <div class="info-box">
+      <svg width="20" height="20" fill="none" viewBox="0 0 20 20"><circle cx="10" cy="10" r="10" fill="#FBBF24"/><path d="M10 6v5M10 13.5v.5" stroke="#92400E" stroke-width="1.5" stroke-linecap="round"/></svg>
+      <div class="text"><strong>Token auto-refresh:</strong> Access tokens are refreshed automatically. The refresh token lasts ~100 days. After expiry, visit <a href="/auth/connect">/auth/connect</a> to re-authorize.</div>
+    </div>
+
+    <div class="footer">Secured by Intuit &middot; AgenticLedger</div>
   </div>
 
-  <h3>Your API Key</h3>
-  <div class="key-box" onclick="navigator.clipboard.writeText('${apiKey}').then(() => this.style.borderColor='#28a745')" title="Click to copy">
-    ${apiKey}
-  </div>
-  <p style="font-size: 13px; color: #666;">Click to copy. Keep this safe — it's your authentication credential.</p>
-
-  <h3>MCP Configuration</h3>
-  <p>Add this to your Claude Desktop <code>claude_desktop_config.json</code>:</p>
-  <pre>{
-  "mcpServers": {
-    "quickbooks": {
-      "url": "${SERVER_BASE_URL}/mcp",
-      "headers": {
-        "Authorization": "Bearer ${apiKey}"
-      }
+  <script>
+    function copyText(text,btn){
+      navigator.clipboard.writeText(text).then(()=>{
+        btn.classList.add('copied');btn.innerHTML='<svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M20 6L9 17l-5-5"/></svg> Copied!';
+        setTimeout(()=>{btn.classList.remove('copied');btn.innerHTML='<svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg> Copy';},2000);
+      });
     }
-  }
-}</pre>
-
-  <div class="warning">
-    <strong>Token auto-refresh:</strong> Your access token will be refreshed automatically.
-    The refresh token lasts ~100 days. After that, visit <a href="/auth/connect">/auth/connect</a> to re-authorize.
-  </div>
+    function copyConfig(btn){
+      const config = JSON.stringify(${JSON.stringify(JSON.parse(mcpConfig))},null,2);
+      navigator.clipboard.writeText(config).then(()=>{
+        btn.classList.add('copied');btn.textContent='Copied!';
+        setTimeout(()=>{btn.classList.remove('copied');btn.innerHTML='<svg width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg> Copy';},2000);
+      });
+    }
+  </script>
 </body>
 </html>`);
   } catch (err: any) {
     console.error('[auth] Token exchange failed:', err);
-    res.status(500).json({
-      error: 'Failed to exchange authorization code',
-      detail: err.message,
-    });
+    res.status(500).send(`<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>QBO MCP - Error</title>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <style>
+    :root{--primary:#2563EB;--primary-50:#EFF6FF;--fg:#0F172A;--muted:#64748B;--surface:#F8FAFC;--border:#E2E8F0;--danger:#EF4444;--danger-light:#FEE2E2;}
+    *{margin:0;padding:0;box-sizing:border-box;}
+    body{font-family:'DM Sans',sans-serif;color:var(--fg);min-height:100vh;display:flex;align-items:center;justify-content:center;background:var(--surface);background-image:linear-gradient(135deg,var(--primary-50) 0%,var(--surface) 50%,#F0F9FF 100%);background-size:400% 400%;animation:gradientShift 15s ease infinite;}
+    @keyframes gradientShift{0%{background-position:0% 50%}50%{background-position:100% 50%}100%{background-position:0% 50%}}
+    .card{background:#fff;border:1px solid var(--border);border-radius:16px;padding:40px;max-width:520px;width:100%;margin:20px;box-shadow:0 1px 3px rgba(0,0,0,.04),0 8px 24px rgba(0,0,0,.06);animation:slideUp .5s ease-out;}
+    @keyframes slideUp{from{opacity:0;transform:translateY(20px)}to{opacity:1;transform:translateY(0)}}
+    .header{display:flex;align-items:center;gap:14px;margin-bottom:28px;padding-bottom:20px;border-bottom:1px solid var(--border);}
+    .header img{height:36px;}
+    .header span{font-size:18px;font-weight:700;color:var(--fg);}
+    .error-banner{background:var(--danger-light);border:1px solid #FECACA;border-radius:12px;padding:16px 20px;margin-bottom:24px;}
+    .error-banner strong{display:block;color:#991B1B;margin-bottom:4px;}
+    .error-banner p{font-size:13px;color:#991B1B;font-family:'JetBrains Mono',monospace;word-break:break-all;}
+    .retry{display:inline-block;margin-top:16px;padding:10px 24px;background:var(--primary);color:#fff;border-radius:10px;text-decoration:none;font-weight:600;font-size:14px;}
+    .retry:hover{background:#1D4ED8;}
+    .footer{margin-top:24px;padding-top:16px;border-top:1px solid var(--border);text-align:center;font-size:12px;color:var(--muted);}
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="header"><img src="/static/logo.png" alt="AgenticLedger"><span>QuickBooks Online MCP</span></div>
+    <div class="error-banner">
+      <strong>Connection Failed</strong>
+      <p>${err.message?.replace(/</g, '&lt;').replace(/>/g, '&gt;') || 'Failed to exchange authorization code'}</p>
+    </div>
+    <a class="retry" href="/auth/connect">Try Again</a>
+    <div class="footer">Secured by Intuit &middot; AgenticLedger</div>
+  </div>
+</body>
+</html>`);
   }
 });
 
