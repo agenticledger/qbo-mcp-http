@@ -16,7 +16,7 @@
  *    - X-Qbo-Environment: sandbox | production
  */
 
-import { randomUUID } from 'node:crypto';
+import { randomUUID, createHash } from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import express from 'express';
@@ -54,6 +54,40 @@ const QBO_ENVIRONMENT = (process.env.QBO_ENVIRONMENT as 'sandbox' | 'production'
 const SERVER_BASE_URL = process.env.SERVER_BASE_URL || `http://localhost:${PORT}`;
 
 const oauthEnabled = !!(QBO_CLIENT_ID && QBO_CLIENT_SECRET && QBO_REDIRECT_URI);
+
+// --- OAuth Authorization Code flow (for Claude.ai) ---
+interface PendingClaudeOAuth {
+  redirectUri: string;
+  codeChallenge: string;
+  codeChallengeMethod: string;
+  claudeState: string;
+  createdAt: number;
+}
+
+interface ClaudeAuthCode {
+  apiKey: string;
+  codeChallenge: string;
+  codeChallengeMethod: string;
+  redirectUri: string;
+  expiresAt: number;
+}
+
+const pendingClaudeFlows = new Map<string, PendingClaudeOAuth>();
+const claudeAuthCodes = new Map<string, ClaudeAuthCode>();
+
+// Pending OAuth states (short-lived, in-memory) — used by both /auth/connect and /authorize
+const pendingStates = new Map<string, { createdAt: number }>();
+
+// Clean up expired entries every 5 minutes
+setInterval(() => {
+  const now = Date.now();
+  for (const [k, v] of pendingClaudeFlows) {
+    if (now - v.createdAt > 600_000) pendingClaudeFlows.delete(k);
+  }
+  for (const [k, v] of claudeAuthCodes) {
+    if (now > v.expiresAt) claudeAuthCodes.delete(k);
+  }
+}, 5 * 60 * 1000);
 
 // --- Intuit OAuth helpers (no SDK dependency — just fetch) ---
 const INTUIT_AUTH_BASE =
@@ -199,6 +233,117 @@ app.use(express.json());
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 app.use('/static', express.static(path.join(__dirname, 'public')));
 
+// ==================== OAuth Authorization Server Metadata ====================
+app.get('/.well-known/oauth-authorization-server', (_req, res) => {
+  res.json({
+    issuer: SERVER_BASE_URL,
+    authorization_endpoint: `${SERVER_BASE_URL}/authorize`,
+    token_endpoint: `${SERVER_BASE_URL}/oauth/token`,
+    registration_endpoint: `${SERVER_BASE_URL}/oauth/register`,
+    grant_types_supported: ['authorization_code'],
+    response_types_supported: ['code'],
+    code_challenge_methods_supported: ['S256'],
+    token_endpoint_auth_methods_supported: ['none'],
+    service_documentation: 'https://financemcps.agenticledger.ai/qbo/',
+  });
+});
+
+// ==================== Dynamic Client Registration ====================
+app.post('/oauth/register', (req, res) => {
+  const { client_name, redirect_uris } = req.body;
+  res.status(201).json({
+    client_id: 'qbo',
+    client_name: client_name || 'Claude.ai',
+    redirect_uris: redirect_uris || [],
+    grant_types: ['authorization_code'],
+    response_types: ['code'],
+    token_endpoint_auth_method: 'none',
+  });
+});
+
+// ==================== OAuth Authorize (Claude.ai PKCE flow) ====================
+app.get('/authorize', (req, res) => {
+  const { response_type, client_id, redirect_uri, code_challenge, code_challenge_method, state, scope } = req.query as Record<string, string>;
+
+  if (response_type !== 'code') {
+    res.status(400).json({ error: 'unsupported_response_type' });
+    return;
+  }
+
+  if (!redirect_uri || !state) {
+    res.status(400).json({ error: 'invalid_request', error_description: 'redirect_uri and state are required' });
+    return;
+  }
+
+  if (!oauthEnabled) {
+    res.status(503).json({ error: 'server_error', error_description: 'QBO OAuth not configured on server' });
+    return;
+  }
+
+  // Generate a session ID to link the Claude OAuth flow to the QBO OAuth flow
+  const oauthSessionId = randomUUID();
+  pendingClaudeFlows.set(oauthSessionId, {
+    redirectUri: redirect_uri,
+    codeChallenge: code_challenge || '',
+    codeChallengeMethod: code_challenge_method || 'S256',
+    claudeState: state,
+    createdAt: Date.now(),
+  });
+
+  // Use the oauthSessionId as part of the Intuit OAuth state so we can link them back
+  // Format: "intuitState:oauthSessionId"
+  const intuitState = `${randomUUID()}:${oauthSessionId}`;
+  pendingStates.set(intuitState, { createdAt: Date.now() });
+
+  // Clean up old states
+  for (const [k, v] of pendingStates) {
+    if (Date.now() - v.createdAt > 600_000) pendingStates.delete(k);
+  }
+
+  const url = getAuthUrl(intuitState);
+  res.redirect(url);
+});
+
+// ==================== OAuth Token Exchange (Claude.ai PKCE flow) ====================
+app.post('/oauth/token', express.urlencoded({ extended: false }), (req, res) => {
+  const { grant_type, code, code_verifier, redirect_uri } = req.body;
+
+  if (grant_type !== 'authorization_code') {
+    res.status(400).json({ error: 'unsupported_grant_type' });
+    return;
+  }
+
+  if (!code || !claudeAuthCodes.has(code)) {
+    res.status(400).json({ error: 'invalid_grant', error_description: 'Invalid or expired authorization code' });
+    return;
+  }
+
+  const authCode = claudeAuthCodes.get(code)!;
+  claudeAuthCodes.delete(code);
+
+  if (Date.now() > authCode.expiresAt) {
+    res.status(400).json({ error: 'invalid_grant', error_description: 'Authorization code expired' });
+    return;
+  }
+
+  // Verify PKCE
+  if (authCode.codeChallenge && code_verifier) {
+    const expectedChallenge = createHash('sha256')
+      .update(code_verifier)
+      .digest('base64url');
+    if (expectedChallenge !== authCode.codeChallenge) {
+      res.status(400).json({ error: 'invalid_grant', error_description: 'PKCE verification failed' });
+      return;
+    }
+  }
+
+  res.json({
+    access_token: authCode.apiKey,
+    token_type: 'bearer',
+    scope: 'mcp',
+  });
+});
+
 // ==================== SMART ROOT / LANDING ====================
 app.get('/', (req, res) => {
   const accept = req.headers['accept'] || '';
@@ -263,8 +408,6 @@ app.get('/health', (_req, res) => {
 });
 
 // ==================== OAUTH ROUTES ====================
-// Pending OAuth states (short-lived, in-memory)
-const pendingStates = new Map<string, { createdAt: number }>();
 
 // GET /auth/connect — start OAuth flow
 app.get('/auth/connect', (_req, res) => {
@@ -373,6 +516,33 @@ app.get('/auth/callback', async (req, res) => {
     });
 
     console.log(`[auth] New connection: realm=${realmId} company=${companyName || 'unknown'}`);
+
+    // Check if this is part of a Claude.ai OAuth flow
+    const stateParts = state.split(':');
+    if (stateParts.length === 2) {
+      const oauthSessionId = stateParts[1];
+      const claudeFlow = pendingClaudeFlows.get(oauthSessionId);
+      if (claudeFlow) {
+        pendingClaudeFlows.delete(oauthSessionId);
+
+        const authCode = randomUUID();
+        claudeAuthCodes.set(authCode, {
+          apiKey,
+          codeChallenge: claudeFlow.codeChallenge,
+          codeChallengeMethod: claudeFlow.codeChallengeMethod,
+          redirectUri: claudeFlow.redirectUri,
+          expiresAt: Date.now() + 5 * 60 * 1000, // 5 min
+        });
+
+        const redirectUrl = new URL(claudeFlow.redirectUri);
+        redirectUrl.searchParams.set('code', authCode);
+        redirectUrl.searchParams.set('state', claudeFlow.claudeState);
+
+        console.log(`[oauth] Claude.ai flow complete — redirecting to ${claudeFlow.redirectUri}`);
+        res.redirect(redirectUrl.toString());
+        return;
+      }
+    }
 
     // Return a branded HTML page with the API key
     const mcpConfig = JSON.stringify({
