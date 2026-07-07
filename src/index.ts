@@ -234,7 +234,10 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 app.use('/static', express.static(path.join(__dirname, 'public')));
 
 // ==================== OAuth Authorization Server Metadata ====================
-app.get('/.well-known/oauth-authorization-server', (_req, res) => {
+// Claude-CLI OAuth-trap fix: OAuth Authorization Server metadata de-advertised.
+// The spec discovery path /.well-known/oauth-authorization-server now 404s, so Claude CLI
+// falls back to Bearer passthrough (Mode-B broker) instead of a self-hosted OAuth dance.
+app.get('/_disabled/oauth-authorization-server', (_req, res) => {
   res.json({
     issuer: SERVER_BASE_URL,
     authorization_endpoint: `${SERVER_BASE_URL}/authorize`,
